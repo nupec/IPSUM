@@ -7,7 +7,6 @@ import unicodedata
 import logging
 import zipfile
 
-
 from fastapi import APIRouter, UploadFile, File, Query, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from enum import Enum
@@ -32,6 +31,7 @@ router = APIRouter()
 class MethodEnum(str, Enum):
     pandana_real_distance = "pandana_real_distance"
     geodesic = "geodesic"
+    pysal = "pysal"
 
 # Enum para formatos de saída
 class OutputFormatEnum(str, Enum):
@@ -168,7 +168,7 @@ def allocate_demands_knn_api(
         resumo = create_summary_table(summary)
         table_image = save_summary_table_image(resumo)
 
-        #Gera box plot
+        # Gera box plot
         box_plot = create_distance_boxplot(merged_df)
         # Gera o relatório PDF
         pdf_buf = generate_allocation_pdf(summary, merged_df)
