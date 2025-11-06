@@ -23,8 +23,8 @@ from app.config import settings
 from app.lib.convert_numpy import convert_numpy_types
 from app.methods.knn_model import allocate_demands_knn
 from app.preprocessing.common import prepare_data
-from app.routes.eda_allocation_route import (
-    analyze_allocation,
+from app.analysis.reporting import (
+    analyze_allocation,  
     create_allocation_charts,
     create_coverage_stats,
     create_distance_boxplot,
@@ -44,8 +44,6 @@ router = APIRouter(prefix="/consulta_base")
 
 BACK_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-# [ALTERAÇÃO] O caminho para um único 'demands.geojson' foi removido.
-# Em vez disso, definimos o diretório base para a nova estrutura de dados.
 DEMANDS_BASE_DIR   = os.path.join(BACK_ROOT, "data", "geojson_por_estado_cidade")
 OPPORTUNITIES_PATH = os.path.join(BACK_ROOT, "data", "opportunities.geojson")
 

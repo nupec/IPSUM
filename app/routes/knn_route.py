@@ -13,7 +13,7 @@ from enum import Enum
 from app.preprocessing.common import prepare_data
 from app.methods.knn_model import allocate_demands_knn
 # Importa as funções de EDA (do módulo eda_allocation_route ou diretamente)
-from app.routes.eda_allocation_route import (
+from app.analysis.reporting import (
     analyze_allocation,
     create_allocation_charts,
     create_coverage_stats,
