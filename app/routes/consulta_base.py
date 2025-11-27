@@ -10,11 +10,12 @@ import zipfile
 from datetime import datetime
 from io import BytesIO
 from typing import Dict, Tuple
+from unidecode import unidecode 
 
 import geopandas as gpd
 import pandas as pd
 import requests
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.analysis.socioeconomic_analys import analyze_knn_allocation
@@ -43,18 +44,17 @@ router = APIRouter(prefix="/consulta_base")
 
 BACK_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-DEMANDS_PATH       = os.path.join(BACK_ROOT, "data", "demands.geojson")
+# [ALTERAÇÃO] O caminho para um único 'demands.geojson' foi removido.
+# Em vez disso, definimos o diretório base para a nova estrutura de dados.
+DEMANDS_BASE_DIR   = os.path.join(BACK_ROOT, "data", "geojson_por_estado_cidade")
 OPPORTUNITIES_PATH = os.path.join(BACK_ROOT, "data", "opportunities.geojson")
 
+
 # --- ATUALIZAÇÃO PARA DOCKER ---
-# Aponta para o diretório compartilhado via volume do Docker.
 SHARED_DIR = "/shared"
 os.makedirs(SHARED_DIR, exist_ok=True)
-
-# Os diretórios agora são o mesmo caminho compartilhado.
 FRONT_DATA_DIR   = SHARED_DIR
 FRONT_CONFIG_DIR = SHARED_DIR
-
 FRONTEND_UPLOAD_URL = os.getenv("FRONTEND_UPLOAD_URL")
 
 # ------------------------------------------------------------------ #
@@ -246,34 +246,43 @@ def _upload_to_frontend(map_id: str, csv_path: str, cfg_path: str) -> str | None
 
 
 # ------------------------------------------------------------------ #
-#  Pré‑carrega lista de UFs/municípios                               #
+# [ALTERAÇÃO] Pré-carregamento foi removido. Rotas agora são dinâmicas. #
 # ------------------------------------------------------------------ #
-try:
-    DEMANDS_GDF = gpd.read_file(DEMANDS_PATH)
-except Exception as e:
-    logger.error("Erro ao carregar %s: %s", DEMANDS_PATH, e)
-    DEMANDS_GDF = gpd.GeoDataFrame()
-
 
 @router.get("/ufs")
 def get_ufs():
-    if DEMANDS_GDF.empty:
-        # CORREÇÃO: Argumentos de JSONResponse na ordem correta
-        return JSONResponse(status_code=500, content={"error": "demands.geojson não carregado"})
-    return sorted(DEMANDS_GDF["UF"].dropna().unique().tolist())
+    """[NOVO] Obtém a lista de UFs dinamicamente listando os diretórios."""
+    try:
+        if not os.path.exists(DEMANDS_BASE_DIR):
+             raise FileNotFoundError("Diretório base de demandas não encontrado.")
+        # Lista apenas os diretórios que correspondem a nomes de UFs (ex: 2 letras)
+        ufs = [d for d in os.listdir(DEMANDS_BASE_DIR) if os.path.isdir(os.path.join(DEMANDS_BASE_DIR, d)) and len(d) == 2]
+        return sorted(ufs)
+    except Exception as e:
+        logger.error("Erro ao listar UFs do diretório: %s", e)
+        return JSONResponse(status_code=500, content={"error": f"Não foi possível carregar a lista de estados: {e}"})
 
 
 @router.get("/municipios")
 def get_municipios(uf: str = Query("")):
-    if DEMANDS_GDF.empty:
-        # CORREÇÃO: Argumentos de JSONResponse na ordem correta
-        return JSONResponse(status_code=500, content={"error": "demands.geojson não carregado"})
-    cidades = DEMANDS_GDF.loc[DEMANDS_GDF["UF"] == uf, "NM_MUN"] if uf else DEMANDS_GDF["NM_MUN"]
-    return sorted(cidades.dropna().unique().tolist())
-
+    """[NOVO] Obtém a lista de municípios dinamicamente listando os arquivos."""
+    if not uf:
+        return []
+    try:
+        uf_path = os.path.join(DEMANDS_BASE_DIR, uf.upper())
+        if not os.path.isdir(uf_path):
+            return [] # Retorna lista vazia se o diretório da UF não existir
+        
+        # Lista arquivos, remove a extensão .geojson e substitui '_' por ' '
+        files = [f for f in os.listdir(uf_path) if f.lower().endswith('.geojson')]
+        cities = [os.path.splitext(f)[0].replace('_', ' ') for f in files]
+        return sorted(cities)
+    except Exception as e:
+        logger.error("Erro ao listar municípios para a UF '%s': %s", uf, e)
+        return JSONResponse(status_code=500, content={"error": f"Não foi possível carregar os municípios para {uf}: {e}"})
 
 # ------------------------------------------------------------------ #
-#  Rota principal                                                     #
+#  Rota principal                                                    #
 # ------------------------------------------------------------------ #
 @router.get("/resultado_completo")
 def consulta_completa(uf: str, municipio: str, tipo: str = Query("geodesic")):
@@ -281,18 +290,35 @@ def consulta_completa(uf: str, municipio: str, tipo: str = Query("geodesic")):
         logger.info("Consulta UF=%s | Mun=%s | Tipo=%s", uf, municipio, tipo)
 
         # ---------- 1. prepara dados ----------
+        
+        # [ALTERAÇÃO] Lógica de carregamento de arquivo de demanda agora é dinâmica.
+        # Normaliza o nome do município para corresponder ao padrão de nome de arquivo (MAIÚSCULAS, _ no lugar de espaço).
+        municipio_filename = f"{unidecode(municipio.upper().replace(' ', '_'))}.geojson"
+        demands_file_path = os.path.join(DEMANDS_BASE_DIR, uf.upper(), municipio_filename)
+
+        logger.info("Tentando carregar arquivo de demanda de: %s", demands_file_path)
+
+        if not os.path.exists(demands_file_path):
+            logger.error("Arquivo de demanda não encontrado: %s", demands_file_path)
+            # Tenta uma variação sem unidecode como fallback
+            municipio_filename_fallback = f"{municipio.upper().replace(' ', '_')}.geojson"
+            demands_file_path = os.path.join(DEMANDS_BASE_DIR, uf.upper(), municipio_filename_fallback)
+            if not os.path.exists(demands_file_path):
+                 logger.error("Arquivo de demanda (fallback) também não encontrado: %s", demands_file_path)
+                 raise HTTPException(status_code=404, detail=f"Arquivo de dados para o município '{municipio}' não encontrado.")
+
         class _Buf:
             def __init__(self, f): self.file = f
 
-        with open(DEMANDS_PATH, "rb") as dem_f, open(OPPORTUNITIES_PATH, "rb") as opp_f:
+        # [ALTERAÇÃO] Abre o arquivo de demanda específico da cidade e o arquivo de oportunidades completo.
+        with open(demands_file_path, "rb") as dem_f, open(OPPORTUNITIES_PATH, "rb") as opp_f:
             err, demands_gdf, opps_gdf, col_did, col_name, col_city, col_state_opp, _ = prepare_data(
                 _Buf(opp_f), _Buf(dem_f), state=uf, city=municipio
             )
+        
         if err:
-            # CORREÇÃO: Argumentos de JSONResponse na ordem correta
             return JSONResponse(status_code=500, content={"erro": err})
         if demands_gdf.empty or opps_gdf.empty:
-            # CORREÇÃO: Argumentos de JSONResponse na ordem correta
             return JSONResponse(status_code=404, content={"erro": "Sem dados suficientes para a localidade."})
 
         # ---------- 2. KNN + resumo ----------
@@ -353,8 +379,8 @@ def consulta_completa(uf: str, municipio: str, tipo: str = Query("geodesic")):
             centroide = demands_gdf.geometry.unary_union.centroid
             center_lat, center_lon = centroide.y, centroide.x
         except Exception:
-            center_lat = demands_gdf["Origin_Lat"].mean()
-            center_lon = demands_gdf["Origin_Lon"].mean()
+            center_lat = df_knn["Origin_Lat"].mean()
+            center_lon = df_knn["Origin_Lon"].mean()
 
         kepler_cfg = build_kepler_config(csv_file, center_lat, center_lon)
         kepler_cfg["label"] = f"Alocação – {municipio}/{uf}"
@@ -365,24 +391,19 @@ def consulta_completa(uf: str, municipio: str, tipo: str = Query("geodesic")):
         map_link = _upload_to_frontend(map_id, csv_path, cfg_path)
 
         if map_link:
-            # limpeza de arquivos temporários do sistema
             try:
                 shutil.rmtree(tmpdir)
             except OSError as e:
                 logger.warning(f"Não foi possível remover o diretório temporário {tmpdir}: {e}")
         else:
-            # Modo legado: grava nas pastas do volume compartilhado
             logger.info(f"Modo legado: movendo arquivos para o diretório compartilhado: {SHARED_DIR}")
             shutil.move(csv_path, os.path.join(FRONT_DATA_DIR, csv_file))
             shutil.move(cfg_path, os.path.join(FRONT_CONFIG_DIR, cfg_file))
-            
-            # Limpa o diretório temporário local, pois os arquivos foram movidos
             try:
                 os.rmdir(tmpdir)
             except OSError as e:
                 logger.warning(f"Não foi possível remover o diretório temporário vazio {tmpdir}: {e}")
-
-            map_link = f"/map/{map_id}"   # fallback link para o frontend
+            map_link = f"/map/{map_id}"
 
         # ---------- 7. resposta ----------
         return {
@@ -393,9 +414,11 @@ def consulta_completa(uf: str, municipio: str, tipo: str = Query("geodesic")):
             "perguntas": perguntas_guiadas,
         }
 
+    except HTTPException as e:
+        # Re-lança exceções HTTP para que o FastAPI as manipule corretamente
+        raise e
     except Exception as e:
         logger.exception("Erro inesperado em /consulta_base/resultado_completo")
-        # CORREÇÃO: Argumentos de JSONResponse na ordem correta
         return JSONResponse(status_code=500, content={"erro": str(e)})
 
 
@@ -407,7 +430,6 @@ def download_zip(uf: str, municipio: str, tipo: str = "geodesic"):
     cache_key = f"{uf}_{municipio}_{tipo}"
     cached = ZIP_CACHE.get(cache_key)
     if not cached:
-        # CORREÇÃO: Argumentos de JSONResponse na ordem correta
         return JSONResponse(status_code=404, content={"erro": "ZIP não disponível. Execute a consulta primeiro."})
 
     _clean_zip_cache()
