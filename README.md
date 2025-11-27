@@ -1,110 +1,86 @@
-# Demand-Allocator
+# IPSUM - Demand Allocation Backend
 
-Welcome to the **Demand-Allocator** repository! This project provides a FastAPI-based application designed to allocate demands to different establishments based on geographic data using geodesic distance calculations and network analysis.
+**IPSUM** is a specialized backend service designed to solve facility location and demand allocation problems using geospatial data. It provides a high-performance API built with FastAPI, capable of processing large datasets using various distance metrics and algorithms.
 
-## Features
+## 🚀 Key Features
 
-- **Geodesic Distance Calculation**: Efficiently calculates the geodesic distance between demand points and establishments.
-- **Centroid Calculation**: Automatically calculates centroids for polygon geometries, ensuring accurate distance measurements when dealing with polygons or multipolygons.
-- **K-Nearest Neighbors (KNN) Allocation**: Supports demand allocation using KNN, with configurable k for either demands or establishments.
-- **Network Distance Calculation**: Utilizes road networks to compute a more realistic distance matrix between demands and establishments.
-- **Flexible Configuration**: Easily configure which columns to use for demands and establishments through the `config.py` file.
-- **Modular Structure**: Organized into modules for easy maintenance, extensibility, and scalability.
-- **Containerization**: Now you can run the application inside a Docker container, ensuring a reproducible and isolated environment.
+* **Versatile Allocation Algorithms:**
+    * **Geodesic Distance:** "As-the-crow-flies" calculations using `geopy`.
+    * **Network Distance:** Real-world street network analysis using `pandana` and `osmnx`.
+    * **High-Performance Indexing:** KD-Tree implementation via `libpysal` for rapid nearest-neighbor queries.
+* **Automated Geoprocessing:**
+    * Automatic centroid calculation for Polygon/MultiPolygon geometries.
+    * Coordinate Reference System (CRS) handling and reprojection.
+* **Socioeconomic Reporting:** Generates PDF reports and statistical summaries (coverage, racial distribution, population demographics).
+* **Dockerized Environment:** Fully isolated runtime using Miniconda to handle complex geospatial dependencies (GDAL, PROJ).
 
-## Installation
+## 📂 Project Structure
 
-### Prerequisites
+The codebase is organized for modularity and scalability:
 
-- Python 3.10 (as specified in the environment file)
-- Conda (environment manager)
-- Git (to clone the repository)
-- Docker (for containerization)
+* `app/main.py`: Application entry point and middleware configuration.
+* `app/routes/`: API endpoints (e.g., KNN allocation, EDA).
+* `app/methods/`: Core algorithms (Geodesic, Pandana, PySAL).
+* `app/analysis/`: Business logic for reporting and chart generation.
+* `app/preprocessing/`: Data cleaning, spatial joins, and network graph downloads.
+* `data/`: Directory for storage of GeoJSON inputs and cache.
 
-### Clone the Repository
+## 🛠️ Installation & Deployment
 
-```bash
-git clone https://github.com/nupec/Demand-Allocator.git
-cd Demand-Allocator
-```
-## Create a Conda Virtual Environment
+### Option 1: Docker (Recommended)
 
-It is recommended to use a conda environment to manage dependencies:
-```bash
-conda env create -f environment.yml
-```
-Activate the Conda Environment
+This project utilizes **Miniconda** within Docker to manage system-level geospatial libraries.
 
-### On Linux/macOS and Windows:
-```bash
-conda activate demand-allocator
-```
-Environment Setup
+1.  **Build the Image:**
+    ```bash
+    docker build -t ipsum-backend .
+    ```
 
-The environment.yml file includes:
+2.  **Run the Container:**
+    ```bash
+    # Runs on port 8050
+    docker run -d -p 8050:8050 --name ipsum-backend ipsum-backend
+    ```
 
-name: demand-allocator
-channels:
-  - conda-forge
-dependencies:
-  - python 3.10
-  - geopandas
-  - geopy
-  - pandas
-  - fastapi
-  - unidecode
-  - uvicorn
-  - libpysal
-  - python-multipart
-  - osmnx
-  - pandana
-  - numpy
-  - matplotlib
+3.  **Access Documentation:**
+    Open [http://localhost:8050/docs](http://localhost:8050/docs) to view the Swagger UI.
 
-Run the Application
-Start the FastAPI Server
+### Option 2: Local Development (Conda)
 
-## Run the server with:
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
+1.  **Create Environment:**
+    ```bash
+    conda env create -f environment.yml
+    ```
 
-The application will be available at http://0.0.0.0:8000/docs.
-Deactivate the Conda Environment
+2.  **Activate Environment:**
+    ```bash
+    conda activate ipsum
+    ```
 
-When you're done working, deactivate the environment:
-```bash
-conda deactivate
-```
-## Docker Container Setup
+3.  **Run Server:**
+    ```bash
+    uvicorn app.main:app --host 0.0.0.0 --port 8050 --reload
+    ```
 
-You can now run the application inside a Docker container to ensure a reproducible and isolated environment.
+## 📊 Input Data Formats
 
-### 1. Build the Docker Image
+The API expects specific column naming conventions for automatic detection, though it is robust enough to infer common variations (e.g., `lat`, `latitude`, `y`).
 
-Execute the following command in the root of the project:
-```bash
-docker build -t demand-allocator .
-```
-### 2. Run the Container
+* **Demands:** GeoJSON or CSV containing population data and location.
+* **Opportunities (Facilities):** GeoJSON or CSV containing facility locations (UBS, Hospitals, Schools).
 
-Start a container mapping port 8000:
-```bash
-docker run -d -p 8000:8000 demand-allocator
-```
-### 3. Test the API in Docker
+*Check `app/config.py` for the full list of supported column aliases.*
 
-Access the API at http://localhost:8000.
+## 🤝 Contributing
 
-## Test Data
+Contributions are welcome! We follow a strict standardization policy to ensure code quality.
 
-### To facilitate testing and validation of the Demand-Allocator system, we provide sample GeoJSON files in a structured format. These files represent synthetic demand points and establishment locations in different configurations.
-Sample Files Structure
+* **Language:** English only (Code, Logs, Docs).
+* **Workflow:** Gitflow (`main`, `develop`, `feature/...`).
+* **Commits:** Conventional Commits.
 
-```bash
-test/
-    ├── 10x10_rj_demands.geojson
-    ├── 10x10_rj_opportunities.geojson
-    ├── 5x5_am_demands.geojson
-    └── 5x5_am_opportunities.geojson
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a Pull Request.
 
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).
