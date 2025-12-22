@@ -23,8 +23,8 @@ from app.config import settings
 from app.lib.convert_numpy import convert_numpy_types
 from app.methods.knn_model import allocate_demands_knn
 from app.preprocessing.common import prepare_data
-from app.routes.eda_allocation_route import (
-    analyze_allocation,
+from app.analysis.reporting import (
+    analyze_allocation,  
     create_allocation_charts,
     create_coverage_stats,
     create_distance_boxplot,
@@ -44,8 +44,6 @@ router = APIRouter(prefix="/consulta_base")
 
 BACK_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-# [ALTERAÇÃO] O caminho para um único 'demands.geojson' foi removido.
-# Em vez disso, definimos o diretório base para a nova estrutura de dados.
 DEMANDS_BASE_DIR   = os.path.join(BACK_ROOT, "data", "geojson_por_estado_cidade")
 OPPORTUNITIES_PATH = os.path.join(BACK_ROOT, "data", "opportunities.geojson")
 
@@ -285,7 +283,7 @@ def get_municipios(uf: str = Query("")):
 #  Rota principal                                                    #
 # ------------------------------------------------------------------ #
 @router.get("/resultado_completo")
-def consulta_completa(uf: str, municipio: str, tipo: str = Query("geodesic")):
+def consulta_completa(uf: str, municipio: str, tipo: str = Query("pysal")): # MUDANÇA AQUI
     try:
         logger.info("Consulta UF=%s | Mun=%s | Tipo=%s", uf, municipio, tipo)
 
@@ -426,7 +424,7 @@ def consulta_completa(uf: str, municipio: str, tipo: str = Query("geodesic")):
 #  Download do ZIP                                                   #
 # ------------------------------------------------------------------ #
 @router.get("/download_zip")
-def download_zip(uf: str, municipio: str, tipo: str = "geodesic"):
+def download_zip(uf: str, municipio: str, tipo: str = "pysal"):
     cache_key = f"{uf}_{municipio}_{tipo}"
     cached = ZIP_CACHE.get(cache_key)
     if not cached:
@@ -436,3 +434,32 @@ def download_zip(uf: str, municipio: str, tipo: str = "geodesic"):
     _, zip_bytes = cached
     headers = {"Content-Disposition": f"attachment; filename=alocacao_{cache_key}.zip"}
     return StreamingResponse(BytesIO(zip_bytes), media_type="application/zip", headers=headers)
+
+
+@router.get("/download_pdf")
+def download_zip(uf: str, municipio: str, tipo: str = "pysal"):
+    """
+    Extrai e retorna apenas o arquivo report.pdf do arquivo ZIP que está em cache.
+    """
+    cache_key = f"{uf}_{municipio}_{tipo}"
+    cached = ZIP_CACHE.get(cache_key)
+    
+    if not cached:
+        return JSONResponse(status_code=404, content={"erro": "Relatório PDF não disponível. Execute a consulta primeiro."})
+
+    _, zip_bytes = cached
+    
+    try:
+        # Abre o ZIP em memória e extrai apenas o PDF
+        with zipfile.ZipFile(BytesIO(zip_bytes), "r") as z:
+            if "report.pdf" not in z.namelist():
+                return JSONResponse(status_code=404, content={"erro": "O arquivo report.pdf não foi encontrado dentro do pacote."})
+            
+            pdf_data = z.read("report.pdf")
+
+        headers = {"Content-Disposition": f"attachment; filename=relatorio_{cache_key}.pdf"}
+        return StreamingResponse(BytesIO(pdf_data), media_type="application/pdf", headers=headers)
+        
+    except Exception as e:
+        logger.error(f"Erro ao extrair PDF do cache: {e}")
+        return JSONResponse(status_code=500, content={"erro": "Erro ao processar o arquivo PDF."})

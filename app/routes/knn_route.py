@@ -13,7 +13,7 @@ from enum import Enum
 from app.preprocessing.common import prepare_data
 from app.methods.knn_model import allocate_demands_knn
 # Importa as funções de EDA (do módulo eda_allocation_route ou diretamente)
-from app.routes.eda_allocation_route import (
+from app.analysis.reporting import (
     analyze_allocation,
     create_allocation_charts,
     create_coverage_stats,
@@ -27,10 +27,9 @@ from app.routes.eda_allocation_route import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Enum para métodos
+# Enum para métodos (Geodesic removido)
 class MethodEnum(str, Enum):
     pandana_real_distance = "pandana_real_distance"
-    geodesic = "geodesic"
     pysal = "pysal"
 
 # Enum para formatos de saída
@@ -49,7 +48,7 @@ def allocate_demands_knn_api(
     # Parâmetro para lista de cidades (JSON array) – opcional
     cities: str = Query("", description="Optional JSON array of cities for multi-city allocation"),
     k: int = Query(1, description="Number of neighbors for KNN"),
-    method: MethodEnum = Query(MethodEnum.pandana_real_distance, description="Choose the allocation method"),
+    method: MethodEnum = Query(MethodEnum.pysal, description="Choose the allocation method"),
     output_format: OutputFormatEnum = Query(OutputFormatEnum.csv, description="Output format: 'csv', 'geojson', or 'json'"),
     eda: bool = Query(False, description="If true, also perform EDA and return a ZIP with allocation and analysis results")
 ):
