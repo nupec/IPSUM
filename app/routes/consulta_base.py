@@ -7,9 +7,10 @@ import shutil
 import tempfile
 import uuid
 import zipfile
+import math  
 from datetime import datetime
 from io import BytesIO
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 from unidecode import unidecode 
 
 import geopandas as gpd
@@ -23,6 +24,7 @@ from app.config import settings
 from app.lib.convert_numpy import convert_numpy_types
 from app.methods.knn_model import allocate_demands_knn
 from app.preprocessing.common import prepare_data
+from app.preprocessing.utils import get_polygon_path 
 from app.analysis.reporting import (
     analyze_allocation,  
     create_allocation_charts,
@@ -77,12 +79,53 @@ def _clean_zip_cache() -> None:
 def _uid() -> str:
     return uuid.uuid4().hex[:7]
 
+# [NOVO] Função para calcular Zoom e Centro baseado na Bounding Box
+def calculate_optimal_view(gdf: gpd.GeoDataFrame):
+    """
+    Calcula o centro (lat, lon) e o nível de zoom ideal para enquadrar
+    toda a geometria do GeoDataFrame na tela do Kepler.gl.
+    """
+    if gdf.empty or not hasattr(gdf, 'total_bounds'):
+        # Fallback padrão se algo der errado
+        return -14.2350, -51.9253, 4
+
+    minx, miny, maxx, maxy = gdf.total_bounds
+    
+    # Centro
+    center_lon = (minx + maxx) / 2
+    center_lat = (miny + maxy) / 2
+    
+    # Cálculo do Zoom
+    # A lógica baseia-se na largura em graus. 
+    # 360 graus = Zoom 0. Cada nível de zoom divide a área por 2.
+    # Adicionamos um padding (margem) subtraindo do zoom final.
+    
+    dif_lon = maxx - minx
+    dif_lat = maxy - miny
+    
+    # Pega a maior dimensão para garantir que caiba
+    max_dif = max(dif_lon, dif_lat)
+    
+    if max_dif == 0:
+        return center_lat, center_lon, 12 # Zoom padrão para ponto único
+        
+    # Fórmula heurística para Web Mercator
+    # zoom = log2(360 / max_dif) + offset
+    # O offset ajusta o tamanho da janela. +1.0 costuma funcionar bem para telas HD.
+    zoom = math.log2(360 / max_dif) + 1.2
+    
+    # Trava limites razoáveis
+    zoom = max(min(zoom, 16), 4)
+    
+    return center_lat, center_lon, zoom
+
 
 def build_kepler_config(
     csv_filename: str,
     center_lat: float,
     center_lon: float,
-    zoom: float = 8.6,
+    poly_filename: str = None, 
+    zoom: float = 10, # Zoom dinâmico
     lat_o: str = "Origin_Lat",
     lon_o: str = "Origin_Lon",
     lat_d: str = "Destination_Lat",
@@ -183,12 +226,57 @@ def build_kepler_config(
         },
     }
 
+    layers = [origin_layer, destination_layer, arc_layer, line_layer]
+
+    # --- Adicionar Camada de Polígono ---
+    if poly_filename:
+        poly_layer_id = _uid()
+        polygon_layer = {
+            "id": poly_layer_id,
+            "type": "geojson",
+            "config": {
+                "dataId": poly_filename, 
+                "label": "Limite Municipal",
+                "color": [18, 147, 154],
+                "columns": {
+                    "geojson": "geometria"
+                },
+                "isVisible": True,
+                "visConfig": {
+                    "opacity": 0.1,
+                    "strokeOpacity": 0.8,
+                    "thickness": 2,
+                    "strokeColor": [221, 178, 124],
+                    "radius": 10,
+                    "sizeRange": [0, 10],
+                    "radiusRange": [0, 50],
+                    "heightRange": [0, 500],
+                    "elevationScale": 5,
+                    "stroked": True,
+                    "filled": True,
+                    "enable3d": False,
+                    "wireframe": False
+                },
+                "hidden": False,
+                "textLabel": []
+            },
+            "visualChannels": {
+                "colorField": None,
+                "colorScale": "quantile",
+                "strokeColorField": None,
+                "strokeColorScale": "quantile",
+                "sizeField": None,
+                "sizeScale": "linear"
+            }
+        }
+        layers.insert(0, polygon_layer)
+
     return {
         "version": "v1",
         "config": {
             "visState": {
                 "filters": [],
-                "layers": [origin_layer, destination_layer, arc_layer, line_layer],
+                "layers": layers,
                 "interactionConfig": {
                     "tooltip": {
                         "fieldsToShow": {
@@ -206,13 +294,14 @@ def build_kepler_config(
                 "layerBlending": "normal",
                 "splitMaps": [],
             },
+            # [CONFIGURAÇÃO DE VISUALIZAÇÃO AQUI]
             "mapState": {
-                "bearing": -33,
+                "bearing": 0,        # 0 = Norte para cima (Corrigido conforme solicitado)
                 "dragRotate": True,
                 "latitude": round(center_lat, 6),
                 "longitude": round(center_lon, 6),
-                "pitch": 59,
-                "zoom": zoom,
+                "pitch": 45,         # Inclinação para ver os arcos 3D (0 seria totalmente plano)
+                "zoom": zoom,        # Zoom calculado dinamicamente
                 "isSplit": False,
             },
             "mapStyle": {"styleType": "dark"},
@@ -220,27 +309,53 @@ def build_kepler_config(
     }
 
 
-def _upload_to_frontend(map_id: str, csv_path: str, cfg_path: str) -> str | None:
-    """Envia CSV/JSON ao endpoint /api/upload_map do frontend."""
+def _upload_to_frontend(map_id: str, csv_path: str, cfg_path: str, poly_path: str = None) -> str | None:
+    """Envia CSV, JSON e opcionalmente Polígono ao endpoint /api/upload_map do frontend."""
     if not FRONTEND_UPLOAD_URL:
         logger.info("FRONTEND_UPLOAD_URL não definido – pulando upload.")
         return None
     logger.info("Enviando mapa para front‑end: %s", FRONTEND_UPLOAD_URL)
+    
+    open_files = []
+    
     try:
-        with open(csv_path, "rb") as f_csv, open(cfg_path, "rb") as f_cfg:
-            files = {
-                "map_id":   (None, map_id),
-                "csv_file": ("map.csv", f_csv, "text/csv"),
-                "cfg_file": ("map.json", f_cfg, "application/json"),
-            }
-            resp = requests.post(FRONTEND_UPLOAD_URL, files=files, timeout=30)
+        data_payload = {
+            "map_id": map_id
+        }
+        
+        f_csv = open(csv_path, "rb")
+        open_files.append(f_csv)
+        
+        f_cfg = open(cfg_path, "rb")
+        open_files.append(f_cfg)
+        
+        files_payload = {
+            "csv_file": ("map.csv", f_csv, "text/csv"),
+            "cfg_file": ("map.json", f_cfg, "application/json"),
+        }
+        
+        if poly_path and os.path.exists(poly_path):
+            f_poly = open(poly_path, "rb")
+            open_files.append(f_poly)
+            files_payload["poly_file"] = (os.path.basename(poly_path), f_poly, "text/csv")
+            logger.info(f"Incluindo arquivo de polígono no upload: {poly_path}")
+
+        resp = requests.post(FRONTEND_UPLOAD_URL, data=data_payload, files=files_payload, timeout=30)
         resp.raise_for_status()
+        
         link = resp.json().get("link")
         logger.info("Upload concluído – link recebido: %s", link)
         return link
+        
     except Exception as e:
         logger.error("Falha no upload: %s", e, exc_info=True)
         return None
+    finally:
+        for f in open_files:
+            try:
+                f.close()
+            except Exception:
+                pass
 
 
 # ------------------------------------------------------------------ #
@@ -253,7 +368,6 @@ def get_ufs():
     try:
         if not os.path.exists(DEMANDS_BASE_DIR):
              raise FileNotFoundError("Diretório base de demandas não encontrado.")
-        # Lista apenas os diretórios que correspondem a nomes de UFs (ex: 2 letras)
         ufs = [d for d in os.listdir(DEMANDS_BASE_DIR) if os.path.isdir(os.path.join(DEMANDS_BASE_DIR, d)) and len(d) == 2]
         return sorted(ufs)
     except Exception as e:
@@ -269,9 +383,8 @@ def get_municipios(uf: str = Query("")):
     try:
         uf_path = os.path.join(DEMANDS_BASE_DIR, uf.upper())
         if not os.path.isdir(uf_path):
-            return [] # Retorna lista vazia se o diretório da UF não existir
+            return [] 
         
-        # Lista arquivos, remove a extensão .geojson e substitui '_' por ' '
         files = [f for f in os.listdir(uf_path) if f.lower().endswith('.geojson')]
         cities = [os.path.splitext(f)[0].replace('_', ' ') for f in files]
         return sorted(cities)
@@ -283,14 +396,11 @@ def get_municipios(uf: str = Query("")):
 #  Rota principal                                                    #
 # ------------------------------------------------------------------ #
 @router.get("/resultado_completo")
-def consulta_completa(uf: str, municipio: str, tipo: str = Query("pysal")): # MUDANÇA AQUI
+def consulta_completa(uf: str, municipio: str, tipo: str = Query("pysal")):
     try:
         logger.info("Consulta UF=%s | Mun=%s | Tipo=%s", uf, municipio, tipo)
 
         # ---------- 1. prepara dados ----------
-        
-        # [ALTERAÇÃO] Lógica de carregamento de arquivo de demanda agora é dinâmica.
-        # Normaliza o nome do município para corresponder ao padrão de nome de arquivo (MAIÚSCULAS, _ no lugar de espaço).
         municipio_filename = f"{unidecode(municipio.upper().replace(' ', '_'))}.geojson"
         demands_file_path = os.path.join(DEMANDS_BASE_DIR, uf.upper(), municipio_filename)
 
@@ -298,7 +408,6 @@ def consulta_completa(uf: str, municipio: str, tipo: str = Query("pysal")): # MU
 
         if not os.path.exists(demands_file_path):
             logger.error("Arquivo de demanda não encontrado: %s", demands_file_path)
-            # Tenta uma variação sem unidecode como fallback
             municipio_filename_fallback = f"{municipio.upper().replace(' ', '_')}.geojson"
             demands_file_path = os.path.join(DEMANDS_BASE_DIR, uf.upper(), municipio_filename_fallback)
             if not os.path.exists(demands_file_path):
@@ -308,7 +417,6 @@ def consulta_completa(uf: str, municipio: str, tipo: str = Query("pysal")): # MU
         class _Buf:
             def __init__(self, f): self.file = f
 
-        # [ALTERAÇÃO] Abre o arquivo de demanda específico da cidade e o arquivo de oportunidades completo.
         with open(demands_file_path, "rb") as dem_f, open(OPPORTUNITIES_PATH, "rb") as opp_f:
             err, demands_gdf, opps_gdf, col_did, col_name, col_city, col_state_opp, _ = prepare_data(
                 _Buf(opp_f), _Buf(dem_f), state=uf, city=municipio
@@ -367,26 +475,50 @@ def consulta_completa(uf: str, municipio: str, tipo: str = Query("pysal")): # MU
         map_id    = f"knn_{timestamp}"
         csv_file  = f"{map_id}.csv"
         cfg_file  = f"{map_id}.json"
+        
+        poly_file = f"poly_{map_id}.csv"
 
         tmpdir   = tempfile.mkdtemp(prefix="vis_upload_")
         csv_path = os.path.join(tmpdir, csv_file)
         cfg_path = os.path.join(tmpdir, cfg_file)
         df_knn.to_csv(csv_path, index=False)
 
+        # Lógica do Polígono
+        data_root = os.path.join(BACK_ROOT, "data")
+        source_poly_path = get_polygon_path(data_root, uf, municipio)
+        
+        has_poly = False
+        dest_poly_path = None
+        if source_poly_path:
+            dest_poly_path = os.path.join(tmpdir, poly_file)
+            shutil.copy(source_poly_path, dest_poly_path)
+            has_poly = True
+            logger.info("Polígono copiado com sucesso para diretório temporário.")
+
+        # [ALTERAÇÃO] Cálculo do Centro e Zoom Dinâmico
         try:
-            centroide = demands_gdf.geometry.unary_union.centroid
-            center_lat, center_lon = centroide.y, centroide.x
-        except Exception:
+            # Calcula a bounding box e o centroide exato da demanda
+            center_lat, center_lon, dynamic_zoom = calculate_optimal_view(demands_gdf)
+        except Exception as e:
+            logger.warning(f"Erro ao calcular zoom dinâmico: {e}. Usando padrão.")
             center_lat = df_knn["Origin_Lat"].mean()
             center_lon = df_knn["Origin_Lon"].mean()
+            dynamic_zoom = 10
 
-        kepler_cfg = build_kepler_config(csv_file, center_lat, center_lon)
+        kepler_cfg = build_kepler_config(
+            csv_filename=csv_file, 
+            center_lat=center_lat, 
+            center_lon=center_lon,
+            poly_filename=poly_file if has_poly else None,
+            zoom=dynamic_zoom # Passa o zoom calculado
+        )
+        
         kepler_cfg["label"] = f"Alocação – {municipio}/{uf}"
         with open(cfg_path, "w", encoding="utf-8") as f:
             json.dump(kepler_cfg, f, ensure_ascii=False, indent=2)
 
-        # ---------- 6. upload ou modo legado ----------
-        map_link = _upload_to_frontend(map_id, csv_path, cfg_path)
+        # ---------- 6. Upload ----------
+        map_link = _upload_to_frontend(map_id, csv_path, cfg_path, poly_path=dest_poly_path if has_poly else None)
 
         if map_link:
             try:
@@ -397,10 +529,16 @@ def consulta_completa(uf: str, municipio: str, tipo: str = Query("pysal")): # MU
             logger.info(f"Modo legado: movendo arquivos para o diretório compartilhado: {SHARED_DIR}")
             shutil.move(csv_path, os.path.join(FRONT_DATA_DIR, csv_file))
             shutil.move(cfg_path, os.path.join(FRONT_CONFIG_DIR, cfg_file))
+            
+            if has_poly and dest_poly_path:
+                shutil.move(dest_poly_path, os.path.join(FRONT_DATA_DIR, poly_file))
+                logger.info(f"Arquivo de polígono movido para {FRONT_DATA_DIR}/{poly_file}")
+
             try:
                 os.rmdir(tmpdir)
             except OSError as e:
                 logger.warning(f"Não foi possível remover o diretório temporário vazio {tmpdir}: {e}")
+            
             map_link = f"/map/{map_id}"
 
         # ---------- 7. resposta ----------
@@ -413,7 +551,6 @@ def consulta_completa(uf: str, municipio: str, tipo: str = Query("pysal")): # MU
         }
 
     except HTTPException as e:
-        # Re-lança exceções HTTP para que o FastAPI as manipule corretamente
         raise e
     except Exception as e:
         logger.exception("Erro inesperado em /consulta_base/resultado_completo")
@@ -438,9 +575,6 @@ def download_zip(uf: str, municipio: str, tipo: str = "pysal"):
 
 @router.get("/download_pdf")
 def download_zip(uf: str, municipio: str, tipo: str = "pysal"):
-    """
-    Extrai e retorna apenas o arquivo report.pdf do arquivo ZIP que está em cache.
-    """
     cache_key = f"{uf}_{municipio}_{tipo}"
     cached = ZIP_CACHE.get(cache_key)
     
@@ -450,11 +584,9 @@ def download_zip(uf: str, municipio: str, tipo: str = "pysal"):
     _, zip_bytes = cached
     
     try:
-        # Abre o ZIP em memória e extrai apenas o PDF
         with zipfile.ZipFile(BytesIO(zip_bytes), "r") as z:
             if "report.pdf" not in z.namelist():
                 return JSONResponse(status_code=404, content={"erro": "O arquivo report.pdf não foi encontrado dentro do pacote."})
-            
             pdf_data = z.read("report.pdf")
 
         headers = {"Content-Disposition": f"attachment; filename=relatorio_{cache_key}.pdf"}
