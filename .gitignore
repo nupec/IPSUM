@@ -74,4 +74,6 @@ coverage.xml
 # MacOS files
 .DS_Store
 
+# Data files
 *.geojson
+data/municipios-poligonos/

@@ -1,4 +1,4 @@
-name: demand-allocator
+name: ipsum
 channels:
   - conda-forge
 dependencies:

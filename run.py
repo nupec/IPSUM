@@ -10,5 +10,5 @@ if __name__ == "__main__":
     )
     logger = logging.getLogger("run")
 
-    logger.info("Starting Uvicorn with the Demand-Allocator app.")
+    logger.info("Starting Uvicorn with the IPSUM app.")
     uvicorn.run(app, host="0.0.0.0", port=8000)
