@@ -1,4 +1,4 @@
-name: demand-allocator
+name: ipsum
 channels:
   - conda-forge
 dependencies:
@@ -17,3 +17,4 @@ dependencies:
   - reportlab=4.4.1
   - libpysal=4.13.0 
   - scipy=1.15.2  
+  - requests=2.31.0

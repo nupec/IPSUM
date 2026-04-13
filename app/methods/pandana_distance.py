@@ -14,7 +14,8 @@ def pandana_distance_matrix(
     col_demand_id,
     col_name,
     city_name=None,
-    max_distance=50000,
+    #max_distance=50000,
+    max_distance=10000,
     num_threads=1
 ):
     logger.info("Constructing distance matrix with Pandana (real distance). city_name=%s", city_name)

@@ -1,5 +1,5 @@
 class Settings:
-    APP_TITLE = "Demand-Allocator"
+    APP_TITLE = "IPSUM"
     APP_DESCRIPTION = "API to allocate demands to different opportunities based on geographic data using geodesic distance and real distance calculations."
     APP_VERSION = "1.0.0"
 
