@@ -107,11 +107,11 @@ def calculate_optimal_view(gdf: gpd.GeoDataFrame):
     max_dif = max(dif_lon, dif_lat)
     
     if max_dif == 0:
-        return center_lat, center_lon, 12 # Zoom padrão para ponto único
+        return center_lat, center_lon, 12 
         
     # Fórmula heurística para Web Mercator
     # zoom = log2(360 / max_dif) + offset
-    # O offset ajusta o tamanho da janela. +1.0 costuma funcionar bem para telas HD.
+    # O offset ajusta o tamanho da janela. 
     zoom = math.log2(360 / max_dif) + 1.2
     
     # Trava limites razoáveis
@@ -125,7 +125,7 @@ def build_kepler_config(
     center_lat: float,
     center_lon: float,
     poly_filename: str = None, 
-    zoom: float = 10, # Zoom dinâmico
+    zoom: float = 10, 
     lat_o: str = "Origin_Lat",
     lon_o: str = "Origin_Lon",
     lat_d: str = "Destination_Lat",
@@ -296,12 +296,12 @@ def build_kepler_config(
             },
             # [CONFIGURAÇÃO DE VISUALIZAÇÃO AQUI]
             "mapState": {
-                "bearing": 0,        # 0 = Norte para cima (Corrigido conforme solicitado)
+                "bearing": 0,       
                 "dragRotate": True,
                 "latitude": round(center_lat, 6),
                 "longitude": round(center_lon, 6),
-                "pitch": 45,         # Inclinação para ver os arcos 3D (0 seria totalmente plano)
-                "zoom": zoom,        # Zoom calculado dinamicamente
+                "pitch": 45,       
+                "zoom": zoom,       
                 "isSplit": False,
             },
             "mapStyle": {"styleType": "dark"},
@@ -356,11 +356,6 @@ def _upload_to_frontend(map_id: str, csv_path: str, cfg_path: str, poly_path: st
                 f.close()
             except Exception:
                 pass
-
-
-# ------------------------------------------------------------------ #
-# [ALTERAÇÃO] Pré-carregamento foi removido. Rotas agora são dinâmicas. #
-# ------------------------------------------------------------------ #
 
 @router.get("/ufs")
 def get_ufs():
@@ -494,10 +489,7 @@ def consulta_completa(uf: str, municipio: str, tipo: str = Query("pysal")):
             shutil.copy(source_poly_path, dest_poly_path)
             has_poly = True
             logger.info("Polígono copiado com sucesso para diretório temporário.")
-
-        # [ALTERAÇÃO] Cálculo do Centro e Zoom Dinâmico
         try:
-            # Calcula a bounding box e o centroide exato da demanda
             center_lat, center_lon, dynamic_zoom = calculate_optimal_view(demands_gdf)
         except Exception as e:
             logger.warning(f"Erro ao calcular zoom dinâmico: {e}. Usando padrão.")
@@ -510,7 +502,7 @@ def consulta_completa(uf: str, municipio: str, tipo: str = Query("pysal")):
             center_lat=center_lat, 
             center_lon=center_lon,
             poly_filename=poly_file if has_poly else None,
-            zoom=dynamic_zoom # Passa o zoom calculado
+            zoom=dynamic_zoom 
         )
         
         kepler_cfg["label"] = f"Alocação – {municipio}/{uf}"
