@@ -12,7 +12,6 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from enum import Enum
 from app.preprocessing.common import prepare_data
 from app.methods.knn_model import allocate_demands_knn
-# CORREÇÃO AQUI: Importar do local correto
 from app.preprocessing.utils import get_polygon_path 
 
 from app.analysis.reporting import (
@@ -29,13 +28,11 @@ from app.analysis.reporting import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Enum para métodos (Geodesic removido, Valhalla adicionado)
 class MethodEnum(str, Enum):
     pandana_real_distance = "pandana_real_distance"
     pysal = "pysal"
     valhalla = "valhalla"  
 
-# Enum para formatos de saída
 class OutputFormatEnum(str, Enum):
     csv = "csv"
     geojson = "geojson"
@@ -78,7 +75,6 @@ def allocate_demands_knn_api(
         from app.preprocessing.common import prepare_data
         from io import BytesIO
         
-        # Classe dummy para simular o comportamento de UploadFile para o prepare_data
         class FakeUploadFile:
             def __init__(self, content):
                 self.file = content
@@ -92,7 +88,6 @@ def allocate_demands_knn_api(
     if cities_list:
         logger.info("Allocating demands for multiple cities: %s", cities_list)
         for city_name in cities_list:
-            # Prepara os dados filtrando (se a lógica interna permitir) ou carrega tudo para filtrar depois
             error, demands_gdf, opportunities_gdf, col_demand_id, col_name, col_city, col_state_opp, col_state_dem = prepare_data_from_bytes(
                 state=state, city_filter=None
             )
@@ -100,16 +95,13 @@ def allocate_demands_knn_api(
                 logger.error("Error in prepare_data: %s", error)
                 raise HTTPException(status_code=400, detail=str(error))
             
-            # Normalização e filtro manual para garantir precisão
             city_norm = unicodedata.normalize("NFKD", city_name.strip().lower()).encode("ascii", "ignore").decode("utf-8")
             
             demands_city = demands_gdf[demands_gdf["NM_MUN"].astype(str).apply(lambda x: unicodedata.normalize("NFKD", x.strip().lower()).encode("ascii", "ignore").decode("utf-8")) == city_norm]
             
-            # Tenta filtrar oportunidades pela coluna de cidade identificada
             if col_city:
                 opp_city = opportunities_gdf[opportunities_gdf[col_city].astype(str).apply(lambda x: unicodedata.normalize("NFKD", x.strip().lower()).encode("ascii", "ignore").decode("utf-8")) == city_norm]
             else:
-                # Se não achou coluna de cidade nas oportunidades, usa todas (fallback)
                 opp_city = opportunities_gdf
 
             if demands_city.empty or opp_city.empty:
@@ -125,7 +117,7 @@ def allocate_demands_knn_api(
                 col_city,
                 col_state_opp,
                 k=k,
-                method=method, # Passa 'valhalla' se selecionado
+                method=method, 
                 city_name=city_name,
                 num_threads=threads
             )
@@ -152,7 +144,7 @@ def allocate_demands_knn_api(
             col_city,
             col_state_opp,
             k=k,
-            method=method, # Passa 'valhalla' se selecionado
+            method=method,
             city_name=city,
             num_threads=threads
         )
@@ -162,7 +154,6 @@ def allocate_demands_knn_api(
     if eda:
         logger.info("EDA option enabled. Generating analysis results.")
         import geopandas as gpd
-        # Recarrega o GeoDataFrame original de demandas para o merge da EDA
         demanda_gdf = gpd.read_file(io.BytesIO(dem_bytes))
         
         merged_df, summary = analyze_allocation(result_df, demanda_gdf)
