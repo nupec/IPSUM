@@ -1,6 +1,7 @@
 import logging
 import geopandas as gpd
 from unidecode import unidecode
+import pandas as pd
 
 from app.preprocessing.geoprocessing import process_geometries
 from app.preprocessing.utils import infer_column
@@ -38,8 +39,12 @@ def prepare_data(opportunities_file, demands_file, state=None, city=None):
     if city:
         logger.info("Filtering by city='%s'.", city)
         city = unidecode(city.lower())
-        opportunities_gdf = opportunities_gdf[opportunities_gdf[col_city].apply(lambda x: unidecode(x.lower())) == city]
-        demands_gdf = demands_gdf[demands_gdf['NM_MUN'].apply(lambda x: unidecode(x.lower())) == city]
+        
+        # Correção: Verifica se não é nulo antes de aplicar unidecode e lower
+        safe_format = lambda x: unidecode(str(x).lower()) if pd.notnull(x) else ""
+        
+        opportunities_gdf = opportunities_gdf[opportunities_gdf[col_city].apply(safe_format) == city]
+        demands_gdf = demands_gdf[demands_gdf['NM_MUN'].apply(safe_format) == city]
 
     logger.info("prepare_data completed successfully.")
     return None, demands_gdf, opportunities_gdf, col_demand_id, col_name, col_city, col_state_opportunities, col_state_demand

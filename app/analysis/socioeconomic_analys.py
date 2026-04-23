@@ -2,11 +2,6 @@ import logging
 import geopandas as gpd
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-from io import BytesIO
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
-from reportlab.lib.utils import ImageReader
 from app.config import settings
 from unidecode import unidecode
 
@@ -17,6 +12,10 @@ INTERVALO_MAX = 0.5  # 1 UBS para cada 2000 pessoas => 0.5/1000
 INTERVALO_MIN = 0.29 # 1 UBS para cada ~3500 pessoas => ~0.29/1000
 
 def find_column(possible_columns, df):
+    """
+    Função utilitária para encontrar o nome real de uma coluna em um DataFrame
+    com base em uma lista de nomes possíveis, ignorando acentos e capitalização.
+    """
     normalized_cols = {unidecode(c).lower(): c for c in df.columns}
     for candidate in possible_columns:
         cand_norm = unidecode(candidate).lower()
@@ -29,26 +28,18 @@ def find_column(possible_columns, df):
 
 def analyze_knn_allocation(knn_df, demands_gdf, opportunities_gdf, settings):
     """
-    Obs: Aqui eu substitui o 'allocate_demands' antigo (que usava cKDTree).
-    Agora recebe diretamente o resultado KNN (knn_df).
-    
-    - knn_df: DataFrame com colunas:
-        demand_id, opportunity_name, distance_km, ...
-      (gerado pelo seu método KNN, seja geodesic ou pandana)
-    - demands_gdf: GeoDataFrame das demandas (com colunas de população e raça).
-    - opportunities_gdf: GeoDataFrame das UBS (para identificar nomes, cidades, etc.).
-    - settings: Configurações (listas de possíveis nomes de coluna).
+    Analisa os resultados de uma alocação KNN.
+
+    Esta função é mantida especificamente para a rota 'consulta_base',
+    pois ela retorna os dados no formato de DICIONÁRIO que a UI (frontend)
+    espera receber.
 
     Retorna:
-      allocation, summary_data
-      - allocation: dicionário (chave = ID do estabelecimento [cnes_column], valor = dict com informações)
-      - summary_data: dict com estatísticas gerais (população total, total UBS, etc.)
-
-    Observação: Mantemos as MESMAS chaves que a função 'allocate_demands' produzia,
-    para que create_charts(allocation) e generate_allocation_pdf(allocation, summary_data) funcionem sem mudar.
+     - allocation (dict): Dicionário com estatísticas por UBS.
+     - summary_data (dict): Dicionário com estatísticas gerais da cidade.
     """
 
-    logger.info("Iniciando análise socioeconômica a partir de um DataFrame KNN.")
+    logger.info("Iniciando análise socioeconômica (para UI) a partir de um DataFrame KNN.")
 
     # ----------------------------
     # 1) Identifica colunas de população e raça no demands_gdf
@@ -60,11 +51,12 @@ def analyze_knn_allocation(knn_df, demands_gdf, opportunities_gdf, settings):
     yellow_column = find_column(settings.YELLOW_POPULATION_POSSIBLE_COLUMNS, demands_gdf)
     sector_column = find_column(settings.DEMAND_ID_POSSIBLE_COLUMNS, demands_gdf)
 
-    if not pop_column:
-        logger.error("Coluna de população não encontrada em demands_gdf.")
-        raise ValueError("Nenhuma coluna correspondente à população encontrada.")
+    if not pop_column or not sector_column:
+        logger.error("Colunas essenciais (População ou ID de Setor) não encontradas em demands_gdf.")
+        raise ValueError("Nenhuma coluna correspondente à população ou ID do setor encontrada.")
 
     # Conversão de chave de merge para string
+    # [NOTA]: O knn_df já deve ter 'demand_id' como str
     knn_df["demand_id"] = knn_df["demand_id"].astype(str)
     demands_gdf[sector_column] = demands_gdf[sector_column].astype(str)
 
@@ -83,7 +75,7 @@ def analyze_knn_allocation(knn_df, demands_gdf, opportunities_gdf, settings):
     # ----------------------------
     # 3) Conta total de UBS
     # ----------------------------
-    total_ubs = len(opportunities_gdf)  # ou unique() de algo
+    total_ubs = len(opportunities_gdf)
     ubs_per_1000 = (total_ubs / total_people_city) * 1000 if total_people_city > 0 else 0
 
     if ubs_per_1000 >= INTERVALO_MAX:
@@ -104,45 +96,44 @@ def analyze_knn_allocation(knn_df, demands_gdf, opportunities_gdf, settings):
         logger.error("Colunas essenciais para estabelecimento não encontradas.")
         raise ValueError("Colunas essenciais (CNES, cidade, nome) não encontradas em opportunities_gdf.")
 
-    # Cria um "mapa" do nome da oportunidade → (cnes, city, nome_ubs)
-    # pois no knn_df 'opportunity_name' deve bater com a coluna do name_column no opportunities_gdf
-    # Ex.: se no knn vc fez dist_df.columns = ubs_gdf[name_column], então "opportunity_name" == ubs_gdf[name_column].
-    # Então fara um dict com base em opportunities_gdf.
+    # Cria um "mapa" do nome da oportunidade -> (cnes, city, nome_ubs)
     establishments_map = {}
     for idx, row in opportunities_gdf.iterrows():
         key_name = str(row[name_column])  
         cnes_val = row[cnes_column]
         city_val = row[city_column]
         ub_name = row[name_column]
-
         establishments_map[key_name] = (cnes_val, city_val, ub_name)
 
     # ----------------------------
     # 5) Mescla knn_df com demands_gdf para trazer colunas de população e raça
     # ----------------------------
+    
+    # Define as colunas a serem mescladas (apenas as que existem)
+    cols_to_merge = [sector_column, pop_column]
+    if black_column: cols_to_merge.append(black_column)
+    if brown_column: cols_to_merge.append(brown_column)
+    if indigenous_column: cols_to_merge.append(indigenous_column)
+    if yellow_column: cols_to_merge.append(yellow_column)
+    
     merged = knn_df.merge(
-        demands_gdf[[sector_column, pop_column, black_column, brown_column, indigenous_column, yellow_column]],
+        demands_gdf[cols_to_merge],
         left_on="demand_id",
         right_on=sector_column,
         how="left"
     )
-
-    # Agora "merged" tem: 
-    #  demand_id, opportunity_name, distance_km, [pop_column, black_column, ...] etc.
 
     # ----------------------------
     # 6) Agrupa por "opportunity_name" e calcular estatísticas
     # ----------------------------
     grouped = merged.groupby("opportunity_name")
     
-    # Montaremos o dicionário 'allocation', onde a chave será o valor do "cnes_column" (ou algo identificador),
     allocation = {}
 
     for opp_name, subdf in grouped:
         # Distância média em km
         mean_distance_km = subdf["distance_km"].mean() if not subdf["distance_km"].isnull().all() else 0.0
-
-        # Para manter a mesma lógica de "se <=700 => 'Ótima (700m)'", etc., precisamos converter para metros:
+        # Converte para metros para a UI
         mean_distance_m = mean_distance_km * 1000.0
 
         if mean_distance_m <= 700:
@@ -173,18 +164,16 @@ def analyze_knn_allocation(knn_df, demands_gdf, opportunities_gdf, settings):
             cnes_val, city_val, ub_name = establishments_map[opp_name]
         else:
             # Se não encontrou, define placeholders
-            cnes_val = "Desconhecido"
+            cnes_val = f"Desconhecido_{opp_name}"
             city_val = "?"
             ub_name = opp_name  # fallback
 
-        # Monta o dicionário final (clonando a estrutura antiga).
-        # Observação: a chave do 'allocation' era est[cnes_column] no código antigo.
-        # Então vamos usar cnes_val como chave.
+        # Monta o dicionário final
         allocation[cnes_val] = {
             'Establishment': city_val,      
             'UBS_Name': ub_name,            
             'Radius': radius,
-            'Mean_Distance': mean_distance_m,        # Em METROS, p/ chart e PDF
+            'Mean_Distance': mean_distance_m,  # Em METROS, para a UI
             'Total_People': total_people_ubs,
             'Total_People_Negros': total_negros,
             'Total_People_Pardos': total_pardos,
@@ -197,7 +186,7 @@ def analyze_knn_allocation(knn_df, demands_gdf, opportunities_gdf, settings):
             'Percentage_Amarela': percentage_ubs_amarela,
         }
 
-    logger.info("Análise finalizada para %d estabelecimentos (UBS).", len(allocation))
+    logger.info("Análise (UI) finalizada para %d estabelecimentos (UBS).", len(allocation))
 
     # ----------------------------
     # 7) Monta summary_data
@@ -209,122 +198,5 @@ def analyze_knn_allocation(knn_df, demands_gdf, opportunities_gdf, settings):
         "UBS_Situation": ubs_situation
     }
 
-    logger.info("Resumo calculado: %s", summary_data)
+    logger.info("Resumo (UI) calculado: %s", summary_data)
     return allocation, summary_data
-
-
-#
-# As funções de gráfico e PDF permanecem IGUAIS:
-#
-
-def create_charts(allocation):
-    logger.info("Iniciando criação dos gráficos a partir dos dados de alocação.")
-    df = pd.DataFrame.from_dict(allocation, orient='index').dropna()
-
-    if df.empty:
-        logger.warning("Nenhum dado disponível para plotagem.")
-        return None
-
-    # Cria figura com 4 subplots
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-    fig.suptitle("Análise de UBS e Demandas", fontsize=16)
-
-    # Gráfico 1: Top 10 UBS com maior atendimento
-    top_people = df.sort_values(by='Total_People', ascending=False).head(10)
-    axes[0, 0].barh(top_people['UBS_Name'], top_people['Total_People'], color='blue')
-    axes[0, 0].set_title("Top 10 UBS com Mais Pessoas Atendidas")
-    axes[0, 0].set_xlabel("Total de Pessoas")
-    axes[0, 0].invert_yaxis()
-
-    # Gráfico 2: Top 10 UBS com maior média de distância
-    top_distance = df.sort_values(by='Mean_Distance', ascending=False).head(10)
-    axes[0, 1].barh(top_distance['UBS_Name'], top_distance['Mean_Distance'], color='red')
-    axes[0, 1].set_title("Top 10 UBS com Maior Média de Distância")
-    axes[0, 1].set_xlabel("Média de Distância (m)")
-    axes[0, 1].invert_yaxis()
-
-    # Gráfico 3: Distribuição dos raios de cobertura
-    df['Radius'].value_counts().plot(kind='bar', ax=axes[1, 0], color='green')
-    axes[1, 0].set_title("Distribuição do Raio de Cobertura")
-    axes[1, 0].set_ylabel("Quantidade de UBS")
-
-    # Gráfico 4: Comparação entre grupos raciais atendidos
-    racial_data = df[['Total_People_Negros', 'Total_People_Pardos', 'Total_People_Indigenas', 'Total_People_Amarela']].sum()
-    racial_data.plot(kind='bar', ax=axes[1, 1], color=['brown', 'orange', 'purple', 'yellow'])
-    axes[1, 1].set_title("Atendimento por Grupo Racial")
-    axes[1, 1].set_ylabel("Total de Pessoas Atendidas")
-
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-
-    img_buffer = BytesIO()
-    plt.savefig(img_buffer, format='png')
-    img_buffer.seek(0)
-    plt.close()
-    logger.info("Gráficos criados com sucesso.")
-    return img_buffer
-
-
-def generate_allocation_pdf(allocation, summary):
-    logger.info("Iniciando geração do relatório PDF.")
-    pdf_buffer = BytesIO()
-    c = canvas.Canvas(pdf_buffer, pagesize=letter)
-    width, height = letter
-    
-    # Título do relatório
-    c.setFont("Helvetica-Bold", 18)
-    c.drawString(100, height - 50, "Relatório de Análise de UBS e Demandas")
-    c.line(100, height - 55, 500, height - 55)
-    
-    # Resumo dos principais indicadores
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(100, height - 80, "Resumo da Situação das UBS")
-    c.setFont("Helvetica", 12)
-    summary_text = [
-        f"População Total: {summary.get('Total_City_Population', 0):,}".replace(",", "."),
-        f"Total de UBS: {summary.get('Total_UBS', 0)}",
-        f"UBS por 1000 habitantes: {summary.get('UBS_per_1000', 0):.2f}",
-        f"Situação das UBS: {summary.get('UBS_Situation', 'Não disponível')}"
-    ]
-    
-    y_position = height - 110
-    for line in summary_text:
-        c.drawString(100, y_position, line)
-        y_position -= 20
-    
-    # Detalhamento por UBS
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(100, y_position - 20, "Detalhamento das UBS")
-    c.setFont("Helvetica", 10)
-    y_position -= 40
-    
-    for key, data in allocation.items():
-        if y_position < 100:
-            c.showPage()
-            c.setFont("Helvetica", 10)
-            y_position = height - 50
-        
-        c.drawString(100, y_position, f"UBS: {data['UBS_Name']} ({data['Establishment']})")
-        c.drawString(120, y_position - 15, f"Raio de Cobertura: {data['Radius']}")
-        c.drawString(120, y_position - 30, f"Distância Média: {data['Mean_Distance']:.2f}m")
-        c.drawString(120, y_position - 45, f"Pessoas Atendidas: {data['Total_People']}")
-        c.drawString(120, y_position - 60, f"Cobertura Relativa à Cidade: {data['Percentage_City']:.2f}%")
-        c.drawString(120, y_position - 75, f"População Negra Atendida: {data['Percentage_Negros']:.2f}%")
-        c.drawString(120, y_position - 90, f"População Parda Atendida: {data['Percentage_Pardos']:.2f}%")
-        c.drawString(120, y_position - 105, f"População Indígena Atendida: {data['Percentage_Indigenas']:.2f}%")
-        c.drawString(120, y_position - 120, f"População Amarela Atendida: {data['Percentage_Amarela']:.2f}%")
-        y_position -= 140
-    
-    # Inserção dos gráficos no relatório
-    charts = create_charts(allocation)
-    if charts:
-        c.showPage()
-        c.setFont("Helvetica-Bold", 14)
-        c.drawString(100, height - 50, "Visualização Gráfica dos Dados")
-        img = ImageReader(charts)
-        c.drawImage(img, 100, height - 400, width=400, height=300)
-    
-    c.showPage()
-    c.save()
-    pdf_buffer.seek(0)
-    logger.info("Relatório PDF gerado com sucesso.")
-    return pdf_buffer

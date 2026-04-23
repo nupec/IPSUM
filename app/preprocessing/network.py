@@ -13,9 +13,11 @@ from shapely import wkt
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 import logging
+import gc # Importado globalmente para garantir disponibilidade
 
 from app.preprocessing.utils import infer_column
 from app.config import settings
+import time # Importando time para o sleep
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -91,7 +93,6 @@ def compute_distance_matrix(demands_gdf, ubs_gdf, city_name=None, max_distance=5
     logger.info("Starting compute_distance_matrix with city_name='%s', max_distance=%d, num_threads=%d",
                 city_name, max_distance, num_threads)
     
-
     # Set timeout (applies to all attempts)
     ox.settings.timeout = 2500
 
@@ -114,7 +115,8 @@ def compute_distance_matrix(demands_gdf, ubs_gdf, city_name=None, max_distance=5
         ubs_gdf = ubs_gdf[ubs_gdf['MUNICÍPIO'].str.upper() == city_name.upper()]
 
     # Initial buffer (in degrees) to expand if points fall outside the network.
-    buffer_size = 0.1
+    # Buffer reduzido para 0.02 (aprox 2.2km) para otimizar memória em áreas densas
+    buffer_size = 0.02
     combined_geom = demands_gdf.unary_union.union(ubs_gdf.unary_union)
 
     max_attempts = 3
@@ -149,10 +151,20 @@ def compute_distance_matrix(demands_gdf, ubs_gdf, city_name=None, max_distance=5
                 except Exception as e:
                     logger.warning("Failed to download network from %s: %s", endpoint, e)
 
-            # If graph is still None, increase the buffer and try again.
+            # Se falhar em todos os endpoints...
             if graph is None:
-                logger.error("Failed on all endpoints for attempt %d. Increasing buffer size.", attempt+1)
-                buffer_size = min(buffer_size * 1.5, 1.0)
+                # MODIFICAÇÃO: Não aumente o buffer se o erro for de conexão/download em cidades grandes
+                # Isso evita o loop da morte onde a área fica maior e mais pesada a cada retry
+                logger.error("Failed on all endpoints for attempt %d.", attempt+1)
+                
+                # Apenas aumente o buffer se tiver certeza que é um problema geométrico, 
+                # mas neste caso de timeout de rede, é melhor manter ou aumentar minimamente.
+                # buffer_size = min(buffer_size * 1.5, 1.0) # <--- REMOVIDO AUMENTO AGRESSIVO
+                
+                # Opção: Esperar um pouco antes de tentar de novo para não ser bloqueado pela API
+                logger.info("Waiting 10 seconds before next attempt...")
+                time.sleep(10)
+                
                 attempt += 1
                 continue
 
@@ -188,6 +200,7 @@ def compute_distance_matrix(demands_gdf, ubs_gdf, city_name=None, max_distance=5
     edge_weights = pd.DataFrame(edges['length'].astype(np.float64))
 
     # Create the Pandana network.
+    logger.info("Initializing Pandana Network engine...")
     network = pdna.Network(
         nodes['x'].values,
         nodes['y'].values,
@@ -195,6 +208,20 @@ def compute_distance_matrix(demands_gdf, ubs_gdf, city_name=None, max_distance=5
         to_nodes,
         edge_weights
     )
+
+    # --- OTIMIZAÇÃO DE MEMÓRIA ---
+    logger.info("Cleaning up raw graph data from memory to free RAM...")
+    del graph
+    del nodes
+    del edges
+    del from_nodes
+    del to_nodes
+    del edge_weights
+    gc.collect() # Força o Garbage Collector a rodar AGORA
+    # -----------------------------
+    
+    # Só agora faça o processamento pesado
+    logger.debug("Locating nearest nodes...")
 
     # Extract coordinates.
     logger.debug("Locating nearest nodes for demand and opportunity points.")
@@ -208,17 +235,15 @@ def compute_distance_matrix(demands_gdf, ubs_gdf, city_name=None, max_distance=5
     invalid_demand_nodes = np.where(demand_nodes_array == -1)[0]
     invalid_ubs_nodes = np.where(ubs_nodes_array == -1)[0]
 
-    # If points fall outside the network, increase the buffer and try again.
+    # If points fall outside the network...
     if len(invalid_demand_nodes) > 0 or len(invalid_ubs_nodes) > 0:
         logger.warning(
             "%d demand points and %d opportunity points are outside the network.",
             len(invalid_demand_nodes), len(invalid_ubs_nodes)
         )
-        buffer_size = min(buffer_size * 1.5, 1.0)
-        logger.info("Increasing buffer to %.3f degrees. (Implementation note: not fully retried here.)", buffer_size)
-        attempt += 1
-        # Note: In this implementation, if there are invalid points even after cache/download,
-        # the downloaded network will be used.
+        # Nota: Como o grafo já foi baixado e deletado, não podemos retentar aumentando buffer neste fluxo sem refazer tudo.
+        # A lógica original tentava aumentar o buffer AQUI, o que não funciona mais com a limpeza de memória acima.
+        logger.warning("Continuing with valid nodes only.")
     else:
         logger.info("All points have been successfully mapped onto the network.")
 
@@ -277,4 +302,6 @@ def compute_distance_matrix(demands_gdf, ubs_gdf, city_name=None, max_distance=5
     distance_df.columns = ubs_names
 
     logger.info("compute_distance_matrix completed successfully.")
-    return distance_df, network, graph, nodes, edges, demand_nodes, ubs_nodes
+    
+    # CORREÇÃO CRÍTICA: Retornar None para os objetos deletados da memória
+    return distance_df, network, None, None, None, demand_nodes, ubs_nodes
