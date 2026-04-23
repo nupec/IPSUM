@@ -200,10 +200,3 @@ def analyze_knn_allocation(knn_df, demands_gdf, opportunities_gdf, settings):
 
     logger.info("Resumo (UI) calculado: %s", summary_data)
     return allocation, summary_data
-
-
-# --- FUNÇÕES REMOVIDAS ---
-#
-# As funções 'create_charts' e 'generate_allocation_pdf'
-# foram movidas para 'app/analysis/reporting.py' para 
-# evitar duplicação de código.
