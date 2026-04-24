@@ -30,6 +30,6 @@ app.add_middleware(
 app.include_router(batch.router)
 
 logger.info("Starting FastAPI application with title: %s", settings.APP_TITLE)
-app.include_router(api_router)
+app.include_router(api_router, prefix="/allocator")
 logger.info("Router has been included. Application setup complete.")
 
