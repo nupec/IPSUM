@@ -27,8 +27,11 @@ app.add_middleware(
     allow_headers=["*"],    
 )
 
-app.include_router(batch.router)
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
+app.include_router(batch.router)
 logger.info("Starting FastAPI application with title: %s", settings.APP_TITLE)
 app.include_router(api_router, prefix="/allocator")
 logger.info("Router has been included. Application setup complete.")
